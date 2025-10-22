@@ -187,28 +187,37 @@ Be concise but informative. If the information is insufficient, say so honestly.
         return self._call_llm(system_prompt, context)
     
     def get_schema_info(self):
-        try:
-            # Get a sample document
-            sample = self.collection.find_one()
-            
-            if not sample:
-                print("⚠️ No documents found in collection!")
-                return "No documents found in collection."
-            
+        """
+        Get schema information from MongoDB collection.
+        Includes schema and sample values of 'Nama' field (if available).
+        """
+        # Get a sample document to infer schema
+        sample = self.collection.find_one()
+
+        if sample:
+            # Remove _id for cleaner schema representation
             if '_id' in sample:
                 del sample['_id']
-            
-            schema_info = "Available properties:\n"
-            for key, value in sample.items():
-                schema_info += f"- {key}: {type(value).__name__} (example: {str(value)[:50]})\n"
-            
-            print(f"📋 Schema Info Retrieved:\n{schema_info}")
-            return schema_info
-        except Exception as e:
-            print(f"❌ Error getting schema: {str(e)}")
-            traceback.print_exc()
-            return f"Error retrieving schema: {str(e)}"
 
+            # Create schema description
+            schema_info = "Available properties:\n"
+            for key in sample.keys():
+                schema_info += f"- {key}: {type(sample[key]).__name__}\n"
+
+            # Get all unique Nama values (if the field exists)
+            nama_values = self.collection.distinct("Nama")
+            if nama_values:
+                schema_info += "\nSample 'Nama' values:\n"
+                for n in nama_values:
+                    schema_info += f"- {n}\n"
+            else:
+                schema_info += "\nNo 'Nama' field found in documents.\n"
+
+            return schema_info
+        else:
+            return "No documents found in collection. Please add your schema information manually."
+
+    
 # Initialize RAG system
 print("🚀 Initializing PepperRAG...")
 try:
