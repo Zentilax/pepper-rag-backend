@@ -153,18 +153,21 @@ IMPORTANT: If there are relevant results, be generous and return true."""
 MongoDB Results:
 {results_str}"""
         
-        response = self._call_llm(system_prompt, user_prompt, response_format="json",use_cheap_model=True)
+        response = self._call_llm(system_prompt, user_prompt, response_format="json")
         result = json.loads(response)
         print(f"✅ Step 5 Result - Answers Question: {result['answers_question']}, Reason: {result['reasoning']}")
         return result['answers_question'], result['reasoning']
     
-    def step5a_query_document_api(self, question):
+    def step5a_query_document_api(self, question, top_k=2):
         """Query the document API with the user's question"""
         try:
             print(f"📄 Querying document API with: {question}")
             response = requests.post(
                 self.doc_api_url,
-                json={"query": question},
+                json={
+                    "question": question,
+                    "top_k": top_k
+                },
                 timeout=30
             )
             response.raise_for_status()
@@ -241,7 +244,7 @@ Be concise but informative. If the information is insufficient, say so honestly.
             context += "Additional information from web:\n"
             context += json.dumps(web_results, indent=2)[:1000]
         
-        return self._call_llm(system_prompt, context,use_cheap_model=True)
+        return self._call_llm(system_prompt, context)
     
     def get_schema_info(self):
         """
