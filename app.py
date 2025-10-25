@@ -29,32 +29,40 @@ class PepperRAG:
             print(f"❌ MongoDB connection error: {str(e)}")
             raise
         self.model = "gpt-4o-mini"
-        self.cheap_model = "gpt-5-nano"  # Cheapest model for document check
         self.doc_api_url = "https://doc-pepper-rag-backend-production.up.railway.app/query"
         
     def _call_llm(self, system_prompt, user_prompt, response_format="text", use_cheap_model=False):
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ]
-        
-        model = self.cheap_model if use_cheap_model else self.model
-        
-        if response_format == "json":
+        if use_cheap_model:
+            # GPT-5-nano has different calling convention
+            combined_prompt = f"{system_prompt}\n\n{user_prompt}"
             response = self.client.chat.completions.create(
-                model=model,
-                messages=messages,
-                response_format={"type": "json_object"},
-                temperature=0
+                model="gpt-5-nano",
+                messages=[{"role": "user", "content": combined_prompt}],
             )
+            content = dict(response.choices[0].message)["content"].strip()
+            return content
         else:
-            response = self.client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=0
-            )
-        
-        return response.choices[0].message.content
+            # Standard model calling convention
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+            
+            if response_format == "json":
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    response_format={"type": "json_object"},
+                    temperature=0
+                )
+            else:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=0
+                )
+            
+            return response.choices[0].message.content
     
     def step1_check_relevance(self, question):
         system_prompt = """You are a relevance checker. Determine if the user's question is related to peppers, chili, or cabai (Indonesian for chili).
