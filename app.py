@@ -13,7 +13,10 @@ import requests
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=True)
+CORS(app, resources={
+    r"/api/*": {"origins": "*"},
+    r"/health": {"origins": "*"}
+}, supports_credentials=True)
 
 class PepperRAG:
     def __init__(self, openai_api_key, mongodb_uri, db_name, collection_name):
