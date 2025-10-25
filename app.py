@@ -7,6 +7,7 @@ from pymongo import MongoClient
 from serpapi import GoogleSearch
 from dotenv import load_dotenv
 import traceback
+import requests
 
 # Load environment variables from .env file (for local development)
 load_dotenv()
@@ -28,23 +29,27 @@ class PepperRAG:
             print(f"❌ MongoDB connection error: {str(e)}")
             raise
         self.model = "gpt-4o-mini"
+        self.cheap_model = "gpt-5-nano"  # Cheapest model for document check
+        self.doc_api_url = "https://doc-pepper-rag-backend-production.up.railway.app/query"
         
-    def _call_llm(self, system_prompt, user_prompt, response_format="text"):
+    def _call_llm(self, system_prompt, user_prompt, response_format="text", use_cheap_model=False):
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ]
         
+        model = self.cheap_model if use_cheap_model else self.model
+        
         if response_format == "json":
             response = self.client.chat.completions.create(
-                model=self.model,
+                model=model,
                 messages=messages,
                 response_format={"type": "json_object"},
                 temperature=0
             )
         else:
             response = self.client.chat.completions.create(
-                model=self.model,
+                model=model,
                 messages=messages,
                 temperature=0
             )
@@ -140,9 +145,48 @@ IMPORTANT: If there are relevant results, be generous and return true."""
 MongoDB Results:
 {results_str}"""
         
-        response = self._call_llm(system_prompt, user_prompt, response_format="json")
+        response = self._call_llm(system_prompt, user_prompt, response_format="json",use_cheap_model=True)
         result = json.loads(response)
         print(f"✅ Step 5 Result - Answers Question: {result['answers_question']}, Reason: {result['reasoning']}")
+        return result['answers_question'], result['reasoning']
+    
+    def step5a_query_document_api(self, question):
+        """Query the document API with the user's question"""
+        try:
+            print(f"📄 Querying document API with: {question}")
+            response = requests.post(
+                self.doc_api_url,
+                json={"query": question},
+                timeout=30
+            )
+            response.raise_for_status()
+            doc_results = response.json()
+            print(f"📄 Document API returned: {len(doc_results.get('results', []))} results")
+            return doc_results
+        except Exception as e:
+            print(f"❌ Document API error: {str(e)}")
+            traceback.print_exc()
+            return None
+    
+    def step5b_evaluate_document_results(self, question, doc_results):
+        """Evaluate if document API results can answer the question using cheap model"""
+        system_prompt = """You are a result evaluator. Determine if the document retrieval results adequately answer the user's question.
+
+Return a JSON object with:
+- "answers_question": true or false
+- "reasoning": brief explanation
+
+IMPORTANT: If there are relevant results that provide a good answer, return true."""
+        
+        doc_str = json.dumps(doc_results, indent=2, default=str)[:2000]
+        user_prompt = f"""Question: {question}
+
+Document Retrieval Results:
+{doc_str}"""
+        
+        response = self._call_llm(system_prompt, user_prompt, response_format="json", use_cheap_model=True)
+        result = json.loads(response)
+        print(f"✅ Step 5b Result - Answers Question: {result['answers_question']}, Reason: {result['reasoning']}")
         return result['answers_question'], result['reasoning']
     
     def step6_web_search(self, question):
@@ -168,7 +212,7 @@ MongoDB Results:
         print(f"🌐 Web search completed: Found {len(web_results)} results")
         return web_results
     
-    def step7_generate_final_answer(self, question, mongodb_results, web_results=None):
+    def step7_generate_final_answer(self, question, mongodb_results=None, doc_results=None, web_results=None):
         system_prompt = """You are a helpful assistant specializing in peppers and chili. 
 Generate a natural, conversational answer to the user's question based on the provided information.
 Be concise but informative. If the information is insufficient, say so honestly."""
@@ -180,11 +224,16 @@ Be concise but informative. If the information is insufficient, say so honestly.
             context += json.dumps(mongodb_results, indent=2, default=str)[:3000]
             context += "\n\n"
         
+        if doc_results:
+            context += "Information from documents:\n"
+            context += json.dumps(doc_results, indent=2, default=str)[:3000]
+            context += "\n\n"
+        
         if web_results:
             context += "Additional information from web:\n"
             context += json.dumps(web_results, indent=2)[:1000]
         
-        return self._call_llm(system_prompt, context)
+        return self._call_llm(system_prompt, context,use_cheap_model=True)
     
     def get_schema_info(self):
         """
@@ -291,7 +340,7 @@ def chat():
                     # Step 7: Generate answer
                     yield f"data: {json.dumps({'step': 7, 'status': 'processing', 'message': 'Generating answer...'})}\n\n"
                     
-                    answer = rag.step7_generate_final_answer(question, mongodb_results)
+                    answer = rag.step7_generate_final_answer(question, mongodb_results=mongodb_results)
                     
                     # Extract images from results
                     images = []
@@ -303,6 +352,39 @@ def chat():
                     yield f"data: {json.dumps({'step': 'final', 'answer': answer, 'source': 'mongodb_only', 'images': images})}\n\n"
                     return
             
+            # Step 5a: Query Document API
+            yield f"data: {json.dumps({'step': '5a', 'status': 'processing', 'message': 'Querying document retrieval system...'})}\n\n"
+            
+            doc_results = rag.step5a_query_document_api(question)
+            
+            if doc_results:
+                yield f"data: {json.dumps({'step': '5a', 'status': 'complete', 'message': 'Document retrieval complete'})}\n\n"
+                
+                # Step 5b: Evaluate document results using cheap model
+                yield f"data: {json.dumps({'step': '5b', 'status': 'processing', 'message': 'Evaluating document results...'})}\n\n"
+                
+                doc_answers, doc_eval_reasoning = rag.step5b_evaluate_document_results(question, doc_results)
+                yield f"data: {json.dumps({'step': '5b', 'status': 'complete', 'message': f'Document evaluation: {doc_eval_reasoning}'})}\n\n"
+                
+                if doc_answers:
+                    # Step 7: Generate answer from documents
+                    yield f"data: {json.dumps({'step': 7, 'status': 'processing', 'message': 'Generating answer from documents...'})}\n\n"
+                    
+                    answer = rag.step7_generate_final_answer(question, mongodb_results=mongodb_results, doc_results=doc_results)
+                    
+                    # Extract images
+                    images = []
+                    for doc in mongodb_results:
+                        if 'gambar' in doc and doc['gambar']:
+                            images.append(doc['gambar'])
+                    
+                    source = 'mongodb_and_documents' if mongodb_results else 'documents_only'
+                    print(f"✅ Final answer generated from {source}")
+                    yield f"data: {json.dumps({'step': 'final', 'answer': answer, 'source': source, 'images': images})}\n\n"
+                    return
+            else:
+                yield f"data: {json.dumps({'step': '5a', 'status': 'complete', 'message': 'Document retrieval unavailable'})}\n\n"
+            
             # Step 6: Web search
             yield f"data: {json.dumps({'step': 6, 'status': 'processing', 'message': 'Searching the web...'})}\n\n"
             
@@ -312,7 +394,7 @@ def chat():
             # Step 7: Generate final answer
             yield f"data: {json.dumps({'step': 7, 'status': 'processing', 'message': 'Generating answer...'})}\n\n"
             
-            answer = rag.step7_generate_final_answer(question, mongodb_results, web_results)
+            answer = rag.step7_generate_final_answer(question, mongodb_results=mongodb_results, doc_results=doc_results, web_results=web_results)
             
             # Extract images
             images = []
@@ -320,7 +402,16 @@ def chat():
                 if 'gambar' in doc and doc['gambar']:
                     images.append(doc['gambar'])
             
-            source = 'mongodb_and_web' if mongodb_results else 'web_only'
+            # Determine source
+            if mongodb_results and doc_results:
+                source = 'mongodb_documents_and_web'
+            elif mongodb_results:
+                source = 'mongodb_and_web'
+            elif doc_results:
+                source = 'documents_and_web'
+            else:
+                source = 'web_only'
+            
             print(f"✅ Final answer generated from {source}")
             yield f"data: {json.dumps({'step': 'final', 'answer': answer, 'source': source, 'images': images})}\n\n"
         
