@@ -14,13 +14,7 @@ load_dotenv()
 app = Flask(__name__)
 
 # FIXED CORS CONFIGURATION
-CORS(app, resources={
-    r"/*": {
-        "origins": "*",
-        "methods": ["GET", "POST", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Accept"]
-    }
-})
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 @app.after_request
 def after_request(response):
@@ -381,7 +375,7 @@ except Exception as e:
     print(f"❌ Failed to initialize PepperRAG: {str(e)}")
     rag = None
 
-@app.route('/api/chat', methods=['POST', 'OPTIONS'])
+@app.route('/api/chat', methods=['POST'])
 def chat():
     # Handle preflight OPTIONS request
     if request.method == 'OPTIONS':
@@ -536,7 +530,7 @@ def chat():
     
     return Response(generate(), mimetype='text/event-stream')
 
-@app.route('/health', methods=['GET', 'OPTIONS'])
+@app.route('/health', methods=['GET'])
 def health():
     if request.method == 'OPTIONS':
         return '', 204
@@ -549,7 +543,7 @@ def health():
         "collection": os.getenv('COLLECTION_NAME', 'cabai')
     })
 
-@app.route('/api/test-db', methods=['GET', 'OPTIONS'])
+@app.route('/api/test-db', methods=['GET'])
 def test_db():
     """Test endpoint to verify MongoDB connection and data"""
     if request.method == 'OPTIONS':
