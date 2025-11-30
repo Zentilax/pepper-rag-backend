@@ -12,10 +12,22 @@ import requests
 load_dotenv()
 
 app = Flask(__name__)
+
+# FIXED CORS CONFIGURATION
 CORS(app, resources={
-    r"/api/*": {"origins": "*"},
-    r"/health": {"origins": "*"}
-}, supports_credentials=True)
+    r"/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Accept"]
+    }
+})
+
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Accept')
+    response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    return response
 
 class PepperRAG:
     def __init__(self, openai_api_key, mongodb_uri, db_name, collection_name):
@@ -369,13 +381,25 @@ except Exception as e:
     print(f"❌ Failed to initialize PepperRAG: {str(e)}")
     rag = None
 
-@app.route('/api/chat', methods=['POST'])
+@app.route('/api/chat', methods=['POST', 'OPTIONS'])
 def chat():
+    # Handle preflight OPTIONS request
+    if request.method == 'OPTIONS':
+        return '', 204
+    
     if not rag:
         return jsonify({"error": "RAG system not initialized. Check MongoDB connection."}), 500
     
-    data = request.json
-    question = data.get('question', '')
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No JSON data received"}), 400
+        question = data.get('question', '')
+        
+        if not question:
+            return jsonify({"error": "No question provided"}), 400
+    except Exception as e:
+        return jsonify({"error": f"Failed to parse JSON: {str(e)}"}), 400
     
     print(f"\n{'='*50}")
     print(f"📨 New Question: {question}")
@@ -512,8 +536,11 @@ def chat():
     
     return Response(generate(), mimetype='text/event-stream')
 
-@app.route('/health', methods=['GET'])
+@app.route('/health', methods=['GET', 'OPTIONS'])
 def health():
+    if request.method == 'OPTIONS':
+        return '', 204
+    
     mongo_status = "connected" if rag and rag.mongo_client else "disconnected"
     return jsonify({
         "status": "ok",
@@ -522,9 +549,12 @@ def health():
         "collection": os.getenv('COLLECTION_NAME', 'cabai')
     })
 
-@app.route('/api/test-db', methods=['GET'])
+@app.route('/api/test-db', methods=['GET', 'OPTIONS'])
 def test_db():
     """Test endpoint to verify MongoDB connection and data"""
+    if request.method == 'OPTIONS':
+        return '', 204
+    
     if not rag:
         return jsonify({"error": "RAG not initialized"}), 500
     
