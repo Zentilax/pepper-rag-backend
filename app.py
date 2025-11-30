@@ -191,17 +191,17 @@ MongoDB Results:
         """Evaluate if document API results can answer the question using cheap model"""
         system_prompt = """You are a result evaluator. Determine if the document retrieval results adequately answer the user's question.
 
-Return a JSON object with:
-- "answers_question": true or false
-- "reasoning": brief explanation
+        Return a JSON object with:
+        - "answers_question": true or false
+        - "reasoning": brief explanation
 
-IMPORTANT: If there are relevant results that provide a good answer, return true."""
+        IMPORTANT: If there are relevant results that provide a good answer, return true."""
         
         doc_str = json.dumps(doc_results, indent=2, default=str)[:2000]
         user_prompt = f"""Question: {question}
 
-Document Retrieval Results:
-{doc_str}"""
+        Document Retrieval Results:
+        {doc_str}"""
         
         response = self._call_llm(system_prompt, user_prompt, response_format="json", use_cheap_model=True)
         result = json.loads(response)
@@ -211,7 +211,7 @@ Document Retrieval Results:
     def step6_web_search(self, question):
         """Perform web search using OpenAI's Web Search tool"""
         try:
-            print(f"🌐 Performing web search for: {question}")
+            print(f"🌐 [WEB_SEARCH] Starting web search for: {question}", flush=True)
             
             response = self.client.responses.create(
                 model="gpt-4.1",
@@ -221,34 +221,54 @@ Document Retrieval Results:
             
             web_results = []
             
-            for item in response.output:
-                if hasattr(item, "content"):
-                    for part in item.content:
-                        if part.type == "web_search.results":
-                            for r in part.results:
-                                web_results.append({
-                                    "title": r.get("title"),
-                                    "snippet": r.get("snippet"),
-                                    "url": r.get("url")
-                                })
+            # Debug: Print raw response structure
+            print(f"🔍 [WEB_SEARCH] Raw response type: {type(response)}", flush=True)
+            print(f"🔍 [WEB_SEARCH] Raw response output type: {type(response.output)}", flush=True)
+            print(f"🔍 [WEB_SEARCH] Raw response output length: {len(response.output) if hasattr(response.output, '__len__') else 'N/A'}", flush=True)
             
-            print(f"🌐 Web search completed: Found {len(web_results)} results")
+            for idx, item in enumerate(response.output):
+                print(f"🔍 [WEB_SEARCH] Processing output item {idx}, type: {type(item)}", flush=True)
+                if hasattr(item, "content"):
+                    print(f"🔍 [WEB_SEARCH] Item {idx} has content, length: {len(item.content) if hasattr(item.content, '__len__') else 'N/A'}", flush=True)
+                    for part_idx, part in enumerate(item.content):
+                        print(f"🔍 [WEB_SEARCH] Content part {part_idx} type: {part.type}", flush=True)
+                        if part.type == "web_search.results":
+                            print(f"🔍 [WEB_SEARCH] Found web_search.results, processing {len(part.results)} results", flush=True)
+                            for r_idx, r in enumerate(part.results):
+                                result = {
+                                    "title": r.get("title", "Untitled"),
+                                    "snippet": r.get("snippet", ""),
+                                    "url": r.get("url", "")
+                                }
+                                print(f"🔍 [WEB_SEARCH] Result {r_idx}: {json.dumps(result, indent=2)}", flush=True)
+                                web_results.append(result)
+                else:
+                    print(f"🔍 [WEB_SEARCH] Item {idx} has no content attribute", flush=True)
+            
+            print(f"🌐 [WEB_SEARCH] COMPLETED: Found {len(web_results)} results", flush=True)
+            print(f"🌐 [WEB_SEARCH] Final web_results: {json.dumps(web_results, indent=2)}", flush=True)
             return web_results
         except Exception as e:
-            print(f"❌ Web search error: {str(e)}")
+            print(f"❌ [WEB_SEARCH] ERROR: {str(e)}", flush=True)
             traceback.print_exc()
             return []
-    
+
     def _format_references(self, mongodb_results, doc_results, web_results):
         """
         Format references section for the final answer
         Returns: str
         """
+        print(f"📚 [REFERENCES] Starting reference formatting", flush=True)
+        print(f"📚 [REFERENCES] MongoDB results: {len(mongodb_results) if mongodb_results else 0}", flush=True)
+        print(f"📚 [REFERENCES] Doc results: {len(doc_results.get('results', [])) if doc_results else 0}", flush=True)
+        print(f"📚 [REFERENCES] Web results: {len(web_results) if web_results else 0}", flush=True)
+        
         references = "\n\n---\n**References:**\n"
         ref_count = 0
         
         # Add MongoDB references
-        if mongodb_results:
+        if mongodb_results and len(mongodb_results) > 0:
+            print(f"📚 [REFERENCES] Adding {len(mongodb_results)} MongoDB references", flush=True)
             references += "\n*From Database:*\n"
             for idx, doc in enumerate(mongodb_results, 1):
                 ref_count += 1
@@ -256,7 +276,8 @@ Document Retrieval Results:
                 references += f"[{ref_count}] {doc_name} (Internal Database)\n"
         
         # Add Document API references
-        if doc_results and doc_results.get('results'):
+        if doc_results and doc_results.get('results') and len(doc_results['results']) > 0:
+            print(f"📚 [REFERENCES] Adding {len(doc_results['results'])} document references", flush=True)
             references += "\n*From Document Retrieval System:*\n"
             for idx, result in enumerate(doc_results['results'], 1):
                 ref_count += 1
@@ -264,21 +285,98 @@ Document Retrieval Results:
                 score = result.get('score', 0)
                 references += f"[{ref_count}] Document (similarity: {score:.3f})\n    Preview: {doc_text}...\n"
         
-        # Add Web references
-        if web_results:
+        # Add Web references - FIXED
+        if web_results and len(web_results) > 0:
+            print(f"📚 [REFERENCES] Adding {len(web_results)} web references", flush=True)
             references += "\n*From Web Search:*\n"
             for idx, result in enumerate(web_results, 1):
                 ref_count += 1
                 title = result.get('title', 'Web Result')
                 url = result.get('url', 'N/A')
-                references += f"[{ref_count}] {title}\n    URL: {url}\n"
+                snippet = result.get('snippet', '')
+                
+                print(f"📚 [REFERENCES] Web ref {ref_count}: title={title}, url={url[:50] if url else 'N/A'}", flush=True)
+                
+                references += f"[{ref_count}] {title}\n"
+                if url and url != 'N/A':
+                    references += f"    URL: {url}\n"
+                if snippet:
+                    references += f"    Preview: {snippet[:100]}...\n"
+        else:
+            print(f"📚 [REFERENCES] No web results to add (web_results={web_results})", flush=True)
         
         if ref_count == 0:
+            print(f"📚 [REFERENCES] No references found", flush=True)
             references += "No external references used.\n"
         
+        print(f"📚 [REFERENCES] COMPLETED: Formatted {ref_count} total references", flush=True)
         return references
-    
+
     def step7_generate_final_answer(self, question, mongodb_results=None, doc_results=None, web_results=None):
+        """
+        Generate humanized final answer with references
+        Returns: str
+        """
+        print(f"🤖 [GENERATE_ANSWER] Starting answer generation", flush=True)
+        print(f"🤖 [GENERATE_ANSWER] Input - MongoDB: {len(mongodb_results) if mongodb_results else 0}, Docs: {bool(doc_results)}, Web: {len(web_results) if web_results else 0}", flush=True)
+        
+        system_prompt = """You are a helpful assistant specializing in peppers and chili. 
+    Generate a natural, conversational answer to the user's question based on the provided information.
+    Be concise but informative. If the information is insufficient, say so honestly.
+
+    IMPORTANT: When citing information, use inline citations like [1], [2], etc. to reference the sources.
+    Number the sources based on the order they appear in the context (database results first, then document results, then web results)."""
+        
+        context = f"Question: {question}\n\n"
+        
+        source_count = 0
+        
+        # Add MongoDB results
+        if mongodb_results and len(mongodb_results) > 0:
+            print(f"🤖 [GENERATE_ANSWER] Adding {len(mongodb_results)} MongoDB results to context", flush=True)
+            context += "Information from database:\n"
+            for idx, doc in enumerate(mongodb_results, 1):
+                source_count += 1
+                context += f"[{source_count}] {json.dumps(doc, indent=2, default=str)}\n"
+            context += "\n"
+        
+        # Add Document API results
+        if doc_results and doc_results.get('results') and len(doc_results['results']) > 0:
+            print(f"🤖 [GENERATE_ANSWER] Adding {len(doc_results['results'])} document results to context", flush=True)
+            context += "Information from document retrieval:\n"
+            for idx, result in enumerate(doc_results['results'], 1):
+                source_count += 1
+                context += f"[{source_count}] {json.dumps(result, indent=2, default=str)}\n"
+            context += "\n"
+        
+        # Add Web results - FIXED
+        if web_results and len(web_results) > 0:
+            print(f"🤖 [GENERATE_ANSWER] Adding {len(web_results)} web results to context", flush=True)
+            context += "Additional information from web:\n"
+            for idx, result in enumerate(web_results, 1):
+                source_count += 1
+                context += f"[{source_count}] {json.dumps(result, indent=2)}\n"
+            context += "\n"
+        else:
+            print(f"🤖 [GENERATE_ANSWER] No web results to add (web_results={web_results})", flush=True)
+        
+        # Add instruction to cite sources
+        context += "\nRemember to cite sources using [1], [2], etc. in your answer."
+        
+        print(f"🤖 [GENERATE_ANSWER] Calling LLM with {source_count} sources", flush=True)
+        answer = self._call_llm(system_prompt, context)
+        
+        print(f"🤖 [GENERATE_ANSWER] LLM response received, length: {len(answer)}", flush=True)
+        
+        # Add formatted references at the end
+        references = self._format_references(mongodb_results, doc_results, web_results)
+        final_answer = answer + references
+        
+        print(f"✅ [GENERATE_ANSWER] COMPLETED: Final answer length: {len(final_answer)}", flush=True)
+        return final_answer
+        
+    
+    def step7_generate_final_answer_old(self, question, mongodb_results=None, doc_results=None, web_results=None):
         """
         Generate humanized final answer with references
         Returns: str
