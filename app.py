@@ -4,7 +4,6 @@ import os
 import json
 from openai import OpenAI
 from pymongo import MongoClient
-from serpapi import GoogleSearch
 from dotenv import load_dotenv
 import traceback
 import requests
@@ -204,50 +203,125 @@ Document Retrieval Results:
         return result['answers_question'], result['reasoning']
     
     def step6_web_search(self, question):
-        api_key = os.getenv('SERPAPI_KEY', '7f4aebfaeec551100c8e71e0f8a7f8ca2a7562943a8943e52adea01a3b7383da')
+        """Perform web search using OpenAI's Web Search tool"""
+        try:
+            print(f"🌐 Performing web search for: {question}")
+            
+            response = self.client.responses.create(
+                model="gpt-4.1",
+                input=question,
+                tools=[{"type": "web_search"}]
+            )
+            
+            web_results = []
+            
+            for item in response.output:
+                if hasattr(item, "content"):
+                    for part in item.content:
+                        if part.type == "web_search.results":
+                            for r in part.results:
+                                web_results.append({
+                                    "title": r.get("title"),
+                                    "snippet": r.get("snippet"),
+                                    "url": r.get("url")
+                                })
+            
+            print(f"🌐 Web search completed: Found {len(web_results)} results")
+            return web_results
+        except Exception as e:
+            print(f"❌ Web search error: {str(e)}")
+            traceback.print_exc()
+            return []
+    
+    def _format_references(self, mongodb_results, doc_results, web_results):
+        """
+        Format references section for the final answer
+        Returns: str
+        """
+        references = "\n\n---\n**References:**\n"
+        ref_count = 0
         
-        search = GoogleSearch({
-            "q": question,
-            "engine": "google",
-            "api_key": api_key,
-            "num": 5
-        })
+        # Add MongoDB references
+        if mongodb_results:
+            references += "\n*From Database:*\n"
+            for idx, doc in enumerate(mongodb_results, 1):
+                ref_count += 1
+                doc_name = doc.get('Nama', doc.get('name', doc.get('nama', f'Document {idx}')))
+                references += f"[{ref_count}] {doc_name} (Internal Database)\n"
         
-        results = search.get_dict()
+        # Add Document API references
+        if doc_results and doc_results.get('results'):
+            references += "\n*From Document Retrieval System:*\n"
+            for idx, result in enumerate(doc_results['results'], 1):
+                ref_count += 1
+                doc_text = result.get('text', '')[:100]  # First 100 chars
+                score = result.get('score', 0)
+                references += f"[{ref_count}] Document (similarity: {score:.3f})\n    Preview: {doc_text}...\n"
         
-        web_results = []
-        for r in results.get("organic_results", []):
-            web_results.append({
-                "title": r.get("title"),
-                "snippet": r.get("snippet"),
-                "url": r.get("link")
-            })
+        # Add Web references
+        if web_results:
+            references += "\n*From Web Search:*\n"
+            for idx, result in enumerate(web_results, 1):
+                ref_count += 1
+                title = result.get('title', 'Web Result')
+                url = result.get('url', 'N/A')
+                references += f"[{ref_count}] {title}\n    URL: {url}\n"
         
-        print(f"🌐 Web search completed: Found {len(web_results)} results")
-        return web_results
+        if ref_count == 0:
+            references += "No external references used.\n"
+        
+        return references
     
     def step7_generate_final_answer(self, question, mongodb_results=None, doc_results=None, web_results=None):
+        """
+        Generate humanized final answer with references
+        Returns: str
+        """
         system_prompt = """You are a helpful assistant specializing in peppers and chili. 
 Generate a natural, conversational answer to the user's question based on the provided information.
-Be concise but informative. If the information is insufficient, say so honestly."""
+Be concise but informative. If the information is insufficient, say so honestly.
+
+IMPORTANT: When citing information, use inline citations like [1], [2], etc. to reference the sources.
+Number the sources based on the order they appear in the context (database results first, then document results, then web results)."""
         
         context = f"Question: {question}\n\n"
         
+        source_count = 0
+        
+        # Add MongoDB results
         if mongodb_results:
             context += "Information from database:\n"
-            context += json.dumps(mongodb_results, indent=2, default=str)[:3000]
-            context += "\n\n"
+            for idx, doc in enumerate(mongodb_results, 1):
+                source_count += 1
+                context += f"[{source_count}] {json.dumps(doc, indent=2, default=str)}\n"
+            context += "\n"
         
-        if doc_results:
-            context += "Information from documents:\n"
-            context += json.dumps(doc_results, indent=2, default=str)[:3000]
-            context += "\n\n"
+        # Add Document API results
+        if doc_results and doc_results.get('results'):
+            context += "Information from document retrieval:\n"
+            for idx, result in enumerate(doc_results['results'], 1):
+                source_count += 1
+                context += f"[{source_count}] {json.dumps(result, indent=2, default=str)}\n"
+            context += "\n"
         
+        # Add Web results
         if web_results:
             context += "Additional information from web:\n"
-            context += json.dumps(web_results, indent=2)[:1000]
+            for idx, result in enumerate(web_results, 1):
+                source_count += 1
+                context += f"[{source_count}] {json.dumps(result, indent=2)}\n"
         
-        return self._call_llm(system_prompt, context)
+        # Add instruction to cite sources
+        context += "\nRemember to cite sources using [1], [2], etc. in your answer."
+        
+        answer = self._call_llm(system_prompt, context)
+        
+        # Add formatted references at the end
+        references = self._format_references(mongodb_results, doc_results, web_results)
+        final_answer = answer + references
+        
+        print(f"✅ Final answer generated with references")
+        return final_answer
     
     def get_schema_info(self):
         """
@@ -317,7 +391,8 @@ def chat():
             yield f"data: {json.dumps({'step': 1, 'status': 'complete', 'message': f'Relevance: {reason}'})}\n\n"
             
             if not is_relevant:
-                yield f"data: {json.dumps({'step': 'final', 'answer': 'I apologize, but your question does not appear to be related to peppers or chili. Please ask me about peppers, chili, or cabai!', 'source': 'relevance_check'})}\n\n"
+                no_ref_answer = "I apologize, but your question does not appear to be related to peppers or chili. Please ask me about peppers, chili, or cabai!\n\n---\n**References:**\nNo references available."
+                yield f"data: {json.dumps({'step': 'final', 'answer': no_ref_answer, 'source': 'relevance_check'})}\n\n"
                 return
             
             # Get schema
@@ -432,7 +507,8 @@ def chat():
         except Exception as e:
             print(f"❌ Error in chat endpoint: {str(e)}")
             traceback.print_exc()
-            yield f"data: {json.dumps({'step': 'final', 'answer': f'An error occurred: {str(e)}', 'source': 'error'})}\n\n"
+            error_answer = f"An error occurred: {str(e)}\n\n---\n**References:**\nNo references available."
+            yield f"data: {json.dumps({'step': 'final', 'answer': error_answer, 'source': 'error'})}\n\n"
     
     return Response(generate(), mimetype='text/event-stream')
 
