@@ -209,6 +209,91 @@ MongoDB Results:
         return result['answers_question'], result['reasoning']
     
     def step6_web_search(self, question):
+        """Perform web search using OpenAI and extract structured JSON sources."""
+        import json
+        import re
+        import traceback
+
+        try:
+            print(f"🌐 [WEB_SEARCH] Running web search for: {question}", flush=True)
+
+            # --- Call OpenAI Responses API ---
+            response = self.client.responses.create(
+                model="gpt-4.1",
+                input=f"""
+    Search the web for: {question}
+
+    After searching, give your answer normally.
+
+    Then output JSON with the following format:
+
+    SOURCES_JSON:
+    {{
+    "sources": [
+        {{"title": "Source title", "snippet": "Key information", "url": "https://example.com"}},
+        {{"title": "Another source", "snippet": "More info", "url": "https://example2.com"}}
+    ]
+    }}
+
+    IMPORTANT: Put SOURCES_JSON: directly before the JSON.
+    """,
+                tools=[{"type": "web_search"}]
+            )
+
+            # --- Extract main text output ---
+            web_content = response.output_text.strip()
+            print(f"🔍 [WEB_SEARCH] Got response text length={len(web_content)}", flush=True)
+
+            web_results = []
+
+            # --- Try to extract JSON after marker ---
+            if "SOURCES_JSON:" in web_content:
+                after = web_content.split("SOURCES_JSON:", 1)[1].strip()
+
+                # Extract the first {...} JSON block using a simple regex
+                json_match = re.search(r"\{.*\}", after, re.DOTALL)
+                if json_match:
+                    try:
+                        json_str = json_match.group(0)
+                        print(f"🔍 [WEB_SEARCH] Extracted JSON block:\n{json_str[:200]}...", flush=True)
+
+                        parsed = json.loads(json_str)
+                        web_results = parsed.get("sources", [])
+                        print(f"🌐 [WEB_SEARCH] Parsed {len(web_results)} sources", flush=True)
+                    except Exception as e:
+                        print(f"⚠️ [WEB_SEARCH] JSON parse error: {e}", flush=True)
+
+            # --- Fallback if JSON missing ---
+            if not web_results:
+                print("⚠️ [WEB_SEARCH] No valid JSON sources found. Falling back.", flush=True)
+
+                # Extract URLs as last resort
+                urls = re.findall(r"https?://[^\s\)]+", web_content)
+
+                if urls:
+                    for i, url in enumerate(urls[:3]):
+                        web_results.append({
+                            "title": f"Web Source {i+1}",
+                            "snippet": web_content[:200] + "...",
+                            "url": url
+                        })
+                else:
+                    web_results.append({
+                        "title": "Web Search Results",
+                        "snippet": web_content[:300] + "...",
+                        "url": "N/A"
+                    })
+
+            print(f"🌐 [WEB_SEARCH] COMPLETED with {len(web_results)} sources.")
+            return web_results
+
+        except Exception as e:
+            print(f"❌ [WEB_SEARCH] ERROR: {e}", flush=True)
+            traceback.print_exc()
+            return []
+
+    
+    def step6_web_search_old(self, question):
         """Perform web search using OpenAI's Web Search tool"""
         try:
             print(f"🌐 [WEB_SEARCH] Starting web search for: {question}", flush=True)
