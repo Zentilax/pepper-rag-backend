@@ -107,14 +107,19 @@ IMPORTANT: Be generous in determining if the database can answer. If the schema 
 MongoDB Collection Schema/Properties:
 {schema_info}
 
+VERY IMPORTANT SEMANTIC RULES:
+1. If the question mentions a cabai type/variety/name (e.g., Kopay, Gendot, Rawit), use it ONLY to FILTER by the 'nama' field.
+2. Do NOT assume names/types are values of attribute fields (such as bentuk_buah, warna_buah, tinggi_tanaman).
+3. If the question asks "seperti apa / apa / bagaimana" about an attribute, that attribute should be returned via PROJECTION, not used as a filter.
+4. Only filter by an attribute if the question explicitly constrains it (e.g., "cabai dengan bentuk kapsul").
+
 Return a JSON object with:
 - "query": MongoDB query object (can be empty {{}} for find all)
 - "projection": projection object (optional, can be null)
 - "sort": sort object (optional, can be null)
 - "limit": number (optional, can be null)
 
-IMPORTANT: 
-- For min/max queries, use proper MongoDB operators ($gte, $lte, etc)
+Other rules:
 - For name searches, use $regex with case-insensitive option
 - Some names don't include 'cabai', be flexible with search terms"""
         
